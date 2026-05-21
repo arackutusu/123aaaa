@@ -41,11 +41,14 @@ def scrape_proxies():
 async def check_proxy(proxy_str, target_ip, target_port, timeout=3):
     try:
         ip, port = proxy_str.split(":")
-        s = socket.socket()
+        loop = asyncio.get_running_loop()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setblocking(False)
         s.settimeout(timeout)
-        s.connect((ip, int(port)))
-        s.send(f"CONNECT {target_ip}:{target_port} HTTP/1.1\r\nHost: {target_ip}:{target_port}\r\n\r\n".encode())
-        resp = s.recv(256)
+        await asyncio.wait_for(loop.sock_connect(s, (ip, int(port))), timeout=timeout)
+        req = f"CONNECT {target_ip}:{target_port} HTTP/1.1\r\nHost: {target_ip}:{target_port}\r\n\r\n"
+        await asyncio.wait_for(loop.sock_sendall(s, req.encode()), timeout=timeout)
+        resp = await asyncio.wait_for(loop.sock_recv(s, 256), timeout=timeout)
         s.close()
         return proxy_str if resp.startswith(b"HTTP/1.1 200") else None
     except:
