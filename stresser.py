@@ -52,23 +52,26 @@ async def check_proxy(proxy_str, target_ip, target_port, timeout=3):
         return None
 
 async def check_all_proxies(proxies, target_ip, target_port):
-    valid = []
-    batch_size = 200
-    total = len(proxies)
-    start = time.time()
-    for i in range(0, total, batch_size):
-        batch = proxies[i:i+batch_size]
-        tasks = [check_proxy(p, target_ip, target_port) for p in batch]
-        results = await asyncio.gather(*tasks)
-        for r in results:
-            if r:
-                valid.append(r)
-        elapsed = time.time() - start
-        pct = min((i+batch_size)/total*100, 100)
-        bar = "█" * int(pct // 5) + "░" * (20 - int(pct // 5))
-        rate = (i+batch_size)/max(elapsed, 0.1)
-        eta = (total-(i+batch_size))/max(rate, 1)
-        print(f"\r[CHECK] |{bar}| {pct:.0f}% {len(valid)} valid | {rate:.0f}/s | ETA {eta:.0f}s", end="", flush=True)
+    valid = []; total = len(proxies); checked = 0; start = time.time()
+    sem = asyncio.Semaphore(100)
+
+    async def check_one(p):
+        nonlocal checked
+        async with sem:
+            ok = await check_proxy(p, target_ip, target_port)
+        checked += 1
+        if checked % 25 == 0 or checked == total:
+            e = time.time()-start; pct=checked/total*100; rate=checked/max(e,0.1)
+            eta=(total-checked)/max(rate,1)
+            bar="█"*int(pct//5)+"░"*(20-int(pct//5))
+            print(f"\r[CHECK] |{bar}| {pct:.0f}% {len(valid)}v {checked}/{total} {rate:.0f}/s ETA{eta:.0f}s", end="", flush=True)
+        return ok
+
+    print(f"[CHECK] {total} proxies, 100 concurrent...", flush=True)
+    tasks = [asyncio.create_task(check_one(p)) for p in proxies]
+    results = await asyncio.gather(*tasks)
+    for r in results:
+        if r: valid.append(r)
     print()
     return valid
 
