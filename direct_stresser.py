@@ -1,7 +1,7 @@
 """
 Minecraft Direct Flood - No proxies, raw TCP
 """
-import socket, time, sys, asyncio, os
+import socket, time, sys, asyncio
 from colorama import init, Fore
 init(autoreset=True)
 
@@ -52,8 +52,7 @@ async def monitor(stop, start, tasks):
         mbps = (b/max(elapsed,0.1))*8/1_000_000
         er = e/max(c+e,1)*100
         alive = sum(1 for t in tasks if not t.done())
-        sep = "\n" if not sys.stdout.isatty() else "\r"
-        print(f"[T{elapsed:.0f}s] {TARGET_IP}:{TARGET_PORT} DATA:{b/1_000_000:.1f}MB RATE:{mbps:.0f}Mbps CONN:{c} ERR:{e}({er:.1f}%) TASKS:{alive}", end=sep, flush=True)
+        print(f"[T{elapsed:.0f}s] {TARGET_IP}:{TARGET_PORT} DATA:{b/1_000_000:.1f}MB RATE:{mbps:.0f}Mbps CONN:{c} ERR:{e}({er:.1f}%) TASKS:{alive}", flush=True)
 
 async def main_async():
     global TASK_COUNT, TEST_DURATION, TARGET_IP, TARGET_PORT
