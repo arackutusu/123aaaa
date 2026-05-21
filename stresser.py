@@ -6,7 +6,7 @@ from colorama import init, Fore
 init(autoreset=True)
 
 TARGET_IP = "5.133.100.33"
-TARGET_PORT = 25565
+TARGET_PORT = 25600
 TASK_COUNT = 5000
 TEST_DURATION = 30
 PAYLOAD_SIZE = 65000
