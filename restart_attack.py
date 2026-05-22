@@ -1,20 +1,30 @@
 #!/usr/bin/env python3
-"""Kill all attack processes and restart"""
+"""Kill attack processes safely, then restart"""
 import subprocess, os, time, signal
 
 REPO = "/workspaces/codespaces-blank/123aaaa"
+LOG = "/tmp/restart.log"
 
-subprocess.run("pkill -f direct_stresser", shell=True)
-subprocess.run("pkill -f 'attack.py'", shell=True)
-time.sleep(2)
+with open(LOG, "w") as f:
+    # Kill only old direct_stresser and attack.py (not this process or SSH)
+    r1 = subprocess.run("ps aux | grep direct_stresser | grep -v grep | awk '{print $2}'", shell=True, capture_output=True, text=True)
+    for pid in r1.stdout.strip().split("\n"):
+        if pid:
+            os.kill(int(pid), 9)
+            f.write(f"Killed direct_stresser {pid}\n")
 
-for f in os.listdir(os.path.join(REPO, "logs")):
-    os.remove(os.path.join(REPO, "logs", f))
+    r2 = subprocess.run("ps aux | grep 'python3.*attack.py' | grep -v grep | awk '{print $2}'", shell=True, capture_output=True, text=True)
+    for pid in r2.stdout.strip().split("\n"):
+        if pid:
+            os.kill(int(pid), 9)
+            f.write(f"Killed attack.py {pid}\n")
 
-log = open("/tmp/attack_launcher.log", "w")
-subprocess.Popen(
-    ["python3", os.path.join(REPO, "attack.py")],
-    stdout=log, stderr=subprocess.STDOUT,
-    cwd=REPO
-)
-print("ATTACK RESTARTED")
+    time.sleep(2)
+
+    for fname in os.listdir(os.path.join(REPO, "logs")):
+        os.remove(os.path.join(REPO, "logs", fname))
+
+    logf = open("/tmp/attack_launcher.log", "w")
+    p = subprocess.Popen(["python3", os.path.join(REPO, "attack.py")], stdout=logf, stderr=subprocess.STDOUT, cwd=REPO)
+    f.write(f"Started attack.py PID {p.pid}\n")
+    print("RESTARTED")

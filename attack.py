@@ -10,7 +10,7 @@ TARGETS = [
     ("5.133.100.33", 25660),
     ("play.furymine.com", 25565),
 ]
-TASKS = 4000
+TASKS = 200
 DURATION = 60
 SCRIPT = os.path.join(os.path.dirname(__file__), "direct_stresser.py")
 
