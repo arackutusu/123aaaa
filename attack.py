@@ -28,7 +28,7 @@ while True:
     procs = []
     for ip, port in TARGETS:
         logfile = os.path.join(log_dir, f"attack_{ip}_{port}.log")
-        cmd = [sys.executable, SCRIPT, ip, str(port), str(TASKS), str(DURATION)]
+        cmd = [sys.executable, SCRIPT, ip, str(port), str(TASKS), str(DURATION), logfile]
         f = open(logfile, "a")
         f.write(f"\n\n=== Cycle {cycle} at {time.strftime('%H:%M:%S')} ===\n")
         f.flush()
