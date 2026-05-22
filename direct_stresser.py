@@ -41,6 +41,10 @@ async def flood_task(stop):
             except: pass
 
 async def monitor(stop, start, tasks):
+    loop = asyncio.get_running_loop()
+    with open(log_file, "a") as lf:
+        lf.write(f"[DEBUG] monitor started at {time.time()}\n")
+        lf.flush()
     while not stop.is_set():
         await asyncio.sleep(1)
         elapsed = time.time() - start
